@@ -1,0 +1,31 @@
+# ConstructA2A Agent Identity
+# Fill this out on first setup. Your agent reads this to know who it represents.
+
+company:
+  name: ""                          # e.g., "Turner Construction" or "MechPro Systems"
+  type: ""                          # "GC" or "Sub"
+  trades: []                        # e.g., ["HVAC", "Plumbing"] (Subs) or ["General Construction"] (GCs)
+  csi_divisions: []                 # e.g., [22, 23] — CSI MasterFormat division numbers
+  service_area: ""                  # e.g., "Northeast US"
+  certifications: []                # e.g., ["OSHA 30", "MBE", "DBE"]
+
+# Financial (Sub only — used for bid decisions)
+financials:
+  emr: 1.0                          # Experience Modification Rate (safety record, lower = better)
+  bonding_capacity: 0               # Max bonding capacity in dollars
+  max_project_size: 0               # Largest project you'll take (dollars)
+  current_backlog: 0                # Current committed work (dollars)
+  crew_size: 0                      # Available crew members
+
+# Preferences
+preferences:
+  auto_evaluate_itbs: true          # Automatically evaluate incoming ITBs (still asks for bid approval)
+  min_project_value: 0              # Ignore projects below this value
+  max_discount_percent: 15          # Hard limit: never discount more than this from original bid
+  min_margin_percent: 8             # Hard limit: minimum acceptable profit margin
+  escalation_rounds: 4              # Force human review after this many negotiation rounds
+
+# Agent networking
+agent:
+  session_key: ""                   # Your OpenClaw session key (so other agents can reach you)
+  created: ""                       # Date this identity was created

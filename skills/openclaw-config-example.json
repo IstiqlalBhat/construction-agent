@@ -1,0 +1,17 @@
+{
+  "$schema": "https://docs.openclaw.ai/config-schema.json",
+  "_comment": "Add this to your OpenClaw agent config to enable ConstructA2A inter-agent communication.",
+
+  "tools": {
+    "agentToAgent": {
+      "enabled": true,
+      "allow": ["main"]
+    }
+  },
+
+  "session": {
+    "agentToAgent": {
+      "maxPingPongTurns": 5
+    }
+  }
+}
