@@ -1,264 +1,509 @@
 'use client';
 
-import Link from 'next/link';
-import { useEffect, useState } from 'react';
-import { C, card, cardSolid, header, meshBg, btn, tag as tagS, statCard, statLabel, statValue } from '@/lib/styles';
+import { useEffect, useState, useCallback } from 'react';
+import { C, card, cardSolid, header, meshBg, btn, badgeStyles, tag as tagS, statCard, statLabel, statValue, th, td } from '@/lib/styles';
 
-const STEPS = [
-  { icon: 'M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z', label: 'Scope Detection', desc: 'AI parses plans & specs' },
-  { icon: 'M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z', label: 'Sub Discovery', desc: 'Match qualified subs' },
-  { icon: 'M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z', label: 'ITB Broadcast', desc: 'A2A protocol messaging' },
-  { icon: 'M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z', label: 'Bid Collection', desc: 'Structured bid responses' },
-  { icon: 'M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4', label: 'Negotiation', desc: 'Autonomous multi-round' },
-  { icon: 'M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z', label: 'Award', desc: 'Contract & LOI' },
-];
+// ─── Types (mirrors local-store.ts) ───
 
-const ACTIVITY = [
-  { agent: 'BuilderAgent', action: 'Detected 7 trade packages', type: 'scope', time: '2s ago' },
-  { agent: 'TradeAgent', action: 'Bid submitted: $2.4M', type: 'bid', time: '5s ago' },
-  { agent: 'BuilderAgent', action: 'Leveled 4 electrical bids', type: 'level', time: '8s ago' },
-  { agent: 'TradeAgent', action: 'Counter: $2.35M + VE option', type: 'negotiate', time: '12s ago' },
-  { agent: 'BuilderAgent', action: 'Award issued to Apex Electric', type: 'award', time: '15s ago' },
-];
+interface Identity {
+  company: { name: string; type: 'GC' | 'Sub'; trades?: string[]; csi_divisions?: number[]; service_area?: string; project_types?: string[] };
+  financials?: { emr?: number; bonding_capacity?: number; max_project_size?: number; current_backlog?: number; crew_size?: number };
+  preferences?: { max_discount_percent?: number; min_margin_percent?: number; escalation_rounds?: number };
+  agent: { role: string; created: string; session_key?: string };
+}
 
-const gradientText = {
-  background: 'linear-gradient(135deg, #4f7df9, #00d4ff)',
-  WebkitBackgroundClip: 'text',
-  WebkitTextFillColor: 'transparent',
-} as const;
+interface Contact { name: string; session_key: string; trades?: string[]; role?: string }
+interface ActivityEntry { ts: string; action: string; summary: string; details?: Record<string, unknown> }
+interface TradePackage { trade_name: string; csi_division: number; estimated_budget: number; scope_items: string[]; status?: string }
+interface LocalBid {
+  base_bid: number; company?: string; from?: { company: string }; trade_name?: string;
+  inclusions?: string[]; exclusions?: string[]; bond_provided?: boolean; emr?: number; status?: string;
+}
+interface LocalNegotiation {
+  trade_name?: string; company?: string; original_bid: number; current_price?: number; status: string;
+  rounds: Array<{ round: number; from: string; price: number; message: string; ve_proposal?: string; timestamp?: string }>;
+}
+interface Project {
+  name: string; location: string; value: number; description?: string; status?: string; slug?: string;
+  trade_packages: TradePackage[]; bids: Record<string, LocalBid>; negotiations: Record<string, LocalNegotiation>;
+}
+interface Opportunity {
+  project_name: string; gc_company: string; trade_name: string; budget: number;
+  scope_items?: string[]; bid_due_date?: string; slug: string;
+  evaluation?: { should_bid: boolean; score: number; reasons: string[] };
+}
+interface DashboardData {
+  identity: Identity | null; contacts: Contact[]; projects: Project[];
+  opportunities: Opportunity[]; bids: Array<LocalBid & { project: string; trade: string }>;
+  activity: ActivityEntry[]; agentDir: string; exists: boolean;
+}
 
-export default function Home() {
-  const [activeStep, setActiveStep] = useState(0);
+// ─── Helpers ───
 
-  useEffect(() => {
-    const timer = setInterval(() => setActiveStep(s => (s + 1) % STEPS.length), 2500);
-    return () => clearInterval(timer);
-  }, []);
+const fmt = (n: number) => '$' + n.toLocaleString();
+const timeAgo = (ts: string) => {
+  const diff = Date.now() - new Date(ts).getTime();
+  if (diff < 60000) return 'just now';
+  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+  return `${Math.floor(diff / 86400000)}d ago`;
+};
+
+const actionBadge = (action: string): { style: keyof typeof badgeStyles; label: string } => {
+  const map: Record<string, { style: keyof typeof badgeStyles; label: string }> = {
+    project_created: { style: 'blue', label: 'Project' },
+    scope_detected: { style: 'cyan', label: 'Scope' },
+    itb_sent: { style: 'purple', label: 'ITB Sent' },
+    itb_received: { style: 'purple', label: 'ITB' },
+    itb_evaluated: { style: 'secondary', label: 'Evaluated' },
+    itb_declined: { style: 'secondary', label: 'Declined' },
+    bid_received: { style: 'blue', label: 'Bid In' },
+    bid_submitted: { style: 'blue', label: 'Bid Out' },
+    bids_leveled: { style: 'cyan', label: 'Leveled' },
+    negotiation_opened: { style: 'amber', label: 'Negotiate' },
+    negotiation_counter: { style: 'amber', label: 'Counter' },
+    negotiation_accepted: { style: 'green', label: 'Accepted' },
+    negotiation_escalated: { style: 'red', label: 'Escalated' },
+    bid_awarded: { style: 'green', label: 'Awarded' },
+    bid_rejected: { style: 'red', label: 'Rejected' },
+    contact_added: { style: 'secondary', label: 'Contact' },
+    identity_created: { style: 'secondary', label: 'Setup' },
+  };
+  return map[action] || { style: 'secondary', label: action };
+};
+
+// ─── Components ───
+
+function SetupGuide({ agentDir }: { agentDir: string }) {
+  return (
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 32, background: C.bg0 }}>
+      <div style={meshBg} />
+      <div style={{ ...cardSolid, padding: 48, maxWidth: 600, textAlign: 'center', position: 'relative', zIndex: 1 }}>
+        <div style={{ fontSize: 48, marginBottom: 16 }}>&#x1F3D7;&#xFE0F;</div>
+        <h1 style={{ fontSize: 28, fontWeight: 800, color: C.t1, marginBottom: 8 }}>ConstructA2A</h1>
+        <p style={{ color: C.t2, fontSize: 15, marginBottom: 32, lineHeight: 1.6 }}>
+          No agent data found. Set up your OpenClaw agent to see your procurement activity here.
+        </p>
+        <div style={{ textAlign: 'left', background: C.bg0, borderRadius: 12, padding: 24, fontFamily: 'monospace', fontSize: 13, color: C.cyan, lineHeight: 1.8 }}>
+          <div style={{ color: C.t3, marginBottom: 8 }}># 1. Run the setup script</div>
+          <div>./skills/setup.sh</div>
+          <div style={{ color: C.t3, marginTop: 16, marginBottom: 8 }}># 2. Install skill in OpenClaw</div>
+          <div style={{ color: C.t2 }}>GC: skills/builder-agent/</div>
+          <div style={{ color: C.t2 }}>Sub: skills/trade-agent/</div>
+          <div style={{ color: C.t3, marginTop: 16, marginBottom: 8 }}># 3. Start your agent</div>
+          <div style={{ color: C.t2 }}>Your agent will create identity at:</div>
+          <div>{agentDir}/identity.json</div>
+        </div>
+        <p style={{ color: C.t3, fontSize: 12, marginTop: 24 }}>
+          This dashboard reads from {agentDir}/ — the same files your OpenClaw agent writes.
+          Every decision, bid, and negotiation is tracked here for full transparency.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function IdentityCard({ identity }: { identity: Identity }) {
+  const isGC = identity.company.type === 'GC';
+  return (
+    <div style={{ ...cardSolid, padding: 24 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+        <div style={{ width: 40, height: 40, borderRadius: 10, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20,
+          background: isGC ? 'rgba(79,125,249,0.15)' : 'rgba(0,232,157,0.15)' }}>
+          {isGC ? '\u{1F3D7}\u{FE0F}' : '\u26A1'}
+        </div>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: C.t1 }}>{identity.company.name}</div>
+          <div style={{ fontSize: 12, color: C.t2 }}>{isGC ? 'General Contractor' : 'Subcontractor'} &middot; {identity.company.service_area || 'No area set'}</div>
+        </div>
+      </div>
+      {identity.company.trades?.length ? (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
+          {identity.company.trades.map(t => <span key={t} style={tagS}>{t}</span>)}
+        </div>
+      ) : null}
+      {!isGC && identity.financials && (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 8 }}>
+          {identity.financials.emr != null && <div style={{ fontSize: 12, color: C.t2 }}>EMR: <span style={{ color: identity.financials.emr < 1 ? C.green : C.amber }}>{identity.financials.emr}</span></div>}
+          {identity.financials.crew_size ? <div style={{ fontSize: 12, color: C.t2 }}>Crew: {identity.financials.crew_size}</div> : null}
+          {identity.financials.bonding_capacity ? <div style={{ fontSize: 12, color: C.t2 }}>Bond cap: {fmt(identity.financials.bonding_capacity)}</div> : null}
+          {identity.financials.current_backlog != null ? <div style={{ fontSize: 12, color: C.t2 }}>Backlog: {fmt(identity.financials.current_backlog)}</div> : null}
+        </div>
+      )}
+      {identity.agent.session_key && (
+        <div style={{ marginTop: 12, fontSize: 11, color: C.t3, fontFamily: 'monospace' }}>
+          Session: {identity.agent.session_key.slice(0, 20)}...
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ContactsList({ contacts }: { contacts: Contact[] }) {
+  if (!contacts.length) return (
+    <div style={{ ...cardSolid, padding: 20 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: C.t2, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 12 }}>Contacts</div>
+      <div style={{ fontSize: 13, color: C.t3 }}>No contacts yet. Add agents in OpenClaw:</div>
+      <div style={{ fontSize: 12, color: C.t3, fontFamily: 'monospace', marginTop: 4 }}>&gt; add contact [name] [session_key]</div>
+    </div>
+  );
 
   return (
-    <div className="min-h-screen relative" style={{ background: C.bg0 }}>
-      <div style={meshBg} />
-
-      {/* Header */}
-      <header className="relative z-10" style={header}>
-        <div className="max-w-7xl mx-auto w-full px-6 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="relative">
-              <div className="w-9 h-9 rounded-xl flex items-center justify-center font-black text-[11px] text-white"
-                style={{ background: 'linear-gradient(135deg, #4f7df9, #00d4ff)' }}>A2A</div>
-            </div>
-            <span className="text-[15px] font-bold tracking-tight" style={{ color: C.t1 }}>
-              Construct<span style={gradientText}>A2A</span>
-            </span>
-          </div>
-          <div className="flex items-center gap-3">
-            <Link href="/gc" style={{ ...btn.primary, ...btn.sm, textDecoration: 'none' }}>GC Dashboard</Link>
-            <Link href="/sub" style={{ ...btn.ghost, ...btn.sm, textDecoration: 'none' }}>Sub Dashboard</Link>
+    <div style={{ ...cardSolid, padding: 20 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: C.t2, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 12 }}>Contacts ({contacts.length})</div>
+      {contacts.map(c => (
+        <div key={c.session_key} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0', borderBottom: `1px solid rgba(56,68,120,0.15)` }}>
+          <div style={{ width: 6, height: 6, borderRadius: '50%', background: C.green, flexShrink: 0 }} />
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 13, color: C.t1, fontWeight: 600 }}>{c.name}</div>
+            {c.trades?.length ? <div style={{ fontSize: 11, color: C.t3 }}>{c.trades.join(', ')}</div> : null}
           </div>
         </div>
-      </header>
+      ))}
+    </div>
+  );
+}
 
-      {/* Hero */}
-      <main className="relative z-10">
-        <section className="max-w-6xl mx-auto px-6 pt-24 pb-16 text-center">
-          <div style={{ animation: 'slideUp 0.6s ease-out both' }}>
-            <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full text-xs font-semibold mb-8 border"
-              style={{ background: 'rgba(79, 125, 249, 0.06)', borderColor: 'rgba(79, 125, 249, 0.15)', color: '#7da2ff' }}>
-              <span className="relative flex h-2 w-2">
-                <span className="absolute inline-flex h-full w-full rounded-full opacity-75" style={{ background: '#4f7df9', animation: 'pulse-ring 1.5s cubic-bezier(0, 0, 0.2, 1) infinite' }}></span>
-                <span className="relative inline-flex rounded-full h-2 w-2" style={{ background: '#4f7df9' }}></span>
-              </span>
-              Agent Network Active — 7 Agents Online
+function ActivityLog({ activity }: { activity: ActivityEntry[] }) {
+  if (!activity.length) return (
+    <div style={{ ...cardSolid, padding: 24 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: C.t2, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 12 }}>Activity Log</div>
+      <div style={{ fontSize: 14, color: C.t3, textAlign: 'center', padding: 32 }}>
+        No activity yet. Start a conversation with your OpenClaw agent to begin procurement.
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{ ...cardSolid, padding: 24 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: C.t2, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 16 }}>
+        Activity Log ({activity.length} events)
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        {activity.map((entry, i) => {
+          const badge = actionBadge(entry.action);
+          const bs = badgeStyles[badge.style];
+          return (
+            <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 12, padding: '10px 0', borderBottom: i < activity.length - 1 ? '1px solid rgba(56,68,120,0.12)' : 'none' }}>
+              <div style={{ width: 48, fontSize: 11, color: C.t3, textAlign: 'right', flexShrink: 0, paddingTop: 2 }}>
+                {timeAgo(entry.ts)}
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 1 }}>
+                <span style={{ ...bs.container, fontSize: 10, alignSelf: 'flex-start' }}>
+                  <span style={bs.dot} />
+                  {badge.label}
+                </span>
+                <div style={{ fontSize: 13, color: C.t1, lineHeight: 1.4 }}>{entry.summary}</div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function GCProjectsView({ projects }: { projects: Project[] }) {
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  if (!projects.length) return (
+    <div style={{ ...cardSolid, padding: 24 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: C.t2, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 12 }}>Projects</div>
+      <div style={{ fontSize: 14, color: C.t3, textAlign: 'center', padding: 32 }}>
+        No projects yet. Tell your agent: &quot;I have a new project&quot;
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: C.t2, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Projects ({projects.length})</div>
+      {projects.map(p => {
+        const key = p.slug || p.name;
+        const isExpanded = expanded === key;
+        const bidCount = Object.keys(p.bids).length;
+        const negCount = Object.keys(p.negotiations).length;
+        const awardedCount = p.trade_packages.filter(tp => tp.status === 'awarded').length;
+
+        return (
+          <div key={key} style={cardSolid}>
+            <div style={{ padding: 20, cursor: 'pointer' }} onClick={() => setExpanded(isExpanded ? null : key)}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <div>
+                  <div style={{ fontSize: 16, fontWeight: 700, color: C.t1 }}>{p.name}</div>
+                  <div style={{ fontSize: 13, color: C.t2, marginTop: 2 }}>{p.location} &middot; {fmt(p.value)}</div>
+                </div>
+                {p.status && (() => {
+                  const s = p.status === 'awarded' ? 'green' : p.status === 'bidding' ? 'blue' : 'secondary';
+                  return <span style={badgeStyles[s].container}><span style={badgeStyles[s].dot} />{p.status}</span>;
+                })()}
+              </div>
+              <div style={{ display: 'flex', gap: 16, marginTop: 12, fontSize: 12, color: C.t3 }}>
+                <span>{p.trade_packages.length} trades</span>
+                <span>{bidCount} bids</span>
+                <span>{negCount} negotiations</span>
+                {awardedCount > 0 && <span style={{ color: C.green }}>{awardedCount} awarded</span>}
+                <span style={{ marginLeft: 'auto', color: C.t3 }}>{isExpanded ? '\u25B2' : '\u25BC'}</span>
+              </div>
             </div>
 
-            <h1 className="text-6xl font-black tracking-tight leading-[1.1] mb-6" style={{ color: C.t1 }}>
-              Construction Procurement
-              <br />
-              <span style={gradientText}>Powered by Agents</span>
-            </h1>
+            {isExpanded && (
+              <div style={{ borderTop: `1px solid ${C.br}`, padding: 20 }}>
+                {p.trade_packages.length > 0 && (
+                  <div style={{ marginBottom: 16 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: C.t3, textTransform: 'uppercase', marginBottom: 8 }}>Trade Packages</div>
+                    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                      <thead><tr>
+                        <th style={th}>Trade</th>
+                        <th style={{ ...th, textAlign: 'right' }}>Budget</th>
+                        <th style={th}>Status</th>
+                      </tr></thead>
+                      <tbody>{p.trade_packages.map((tp, i) => (
+                        <tr key={i}>
+                          <td style={{ ...td, color: C.t1, fontWeight: 600 }}>{tp.trade_name}</td>
+                          <td style={{ ...td, textAlign: 'right', color: C.blueL }}>{fmt(tp.estimated_budget)}</td>
+                          <td style={td}><span style={tagS}>{tp.status || 'detected'}</span></td>
+                        </tr>
+                      ))}</tbody>
+                    </table>
+                  </div>
+                )}
 
-            <p className="text-lg max-w-2xl mx-auto leading-relaxed mb-12" style={{ color: C.t2 }}>
-              Autonomous AI agents for GCs and Subs communicate via A2A protocols —
-              compressing weeks of procurement work into hours.
-            </p>
+                {bidCount > 0 && (
+                  <div style={{ marginBottom: 16 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: C.t3, textTransform: 'uppercase', marginBottom: 8 }}>Received Bids</div>
+                    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                      <thead><tr>
+                        <th style={th}>Sub</th>
+                        <th style={{ ...th, textAlign: 'right' }}>Bid</th>
+                        <th style={th}>Bond</th>
+                        <th style={th}>Status</th>
+                      </tr></thead>
+                      <tbody>{Object.entries(p.bids).map(([k, b]) => (
+                        <tr key={k}>
+                          <td style={{ ...td, color: C.t1, fontWeight: 600 }}>{b.company || b.from?.company || k}</td>
+                          <td style={{ ...td, textAlign: 'right', color: C.cyan }}>{fmt(b.base_bid)}</td>
+                          <td style={td}>{b.bond_provided ? '\u2705' : '\u2014'}</td>
+                          <td style={td}><span style={tagS}>{b.status || 'submitted'}</span></td>
+                        </tr>
+                      ))}</tbody>
+                    </table>
+                  </div>
+                )}
 
-            <div className="flex items-center justify-center gap-4 mb-20">
-              <Link href="/gc" style={{ ...btn.primary, ...btn.lg, textDecoration: 'none' }}>
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" /></svg>
-                Launch GC Dashboard
-              </Link>
-              <Link href="/sub" style={{ ...btn.ghost, ...btn.lg, textDecoration: 'none' }}>
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-                Sub Dashboard
-              </Link>
+                {negCount > 0 && (
+                  <div>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: C.t3, textTransform: 'uppercase', marginBottom: 8 }}>Negotiations</div>
+                    {Object.entries(p.negotiations).map(([k, neg]) => {
+                      const ns = neg.status === 'agreed' ? 'green' : neg.status === 'escalated' ? 'red' : 'amber';
+                      return (
+                        <div key={k} style={{ ...card, padding: 16, marginBottom: 8 }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+                            <span style={{ fontSize: 14, fontWeight: 600, color: C.t1 }}>{neg.company || neg.trade_name || k}</span>
+                            <span style={badgeStyles[ns].container}><span style={badgeStyles[ns].dot} />{neg.status}</span>
+                          </div>
+                          <div style={{ fontSize: 12, color: C.t2, marginBottom: 8 }}>
+                            Original: {fmt(neg.original_bid)} &rarr; {neg.current_price ? fmt(neg.current_price) : 'In progress'} &middot; {neg.rounds.length} rounds
+                          </div>
+                          {neg.rounds.map((r, i) => (
+                            <div key={i} style={{ padding: '6px 0', borderTop: i > 0 ? '1px solid rgba(56,68,120,0.1)' : 'none', fontSize: 12 }}>
+                              <span style={{ color: r.from === 'gc' ? C.blue : C.green, fontWeight: 600 }}>{r.from === 'gc' ? 'GC' : 'Sub'}</span>
+                              <span style={{ color: C.t2 }}> &middot; R{r.round} &middot; </span>
+                              <span style={{ color: C.cyan }}>{fmt(r.price)}</span>
+                              <div style={{ color: C.t3, marginTop: 2 }}>{r.message}</div>
+                              {r.ve_proposal && <div style={{ color: C.purple, marginTop: 2, fontStyle: 'italic' }}>VE: {r.ve_proposal}</div>}
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function SubOpportunitiesView({ opportunities, bids }: { opportunities: Opportunity[]; bids: Array<LocalBid & { project: string; trade: string }> }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {opportunities.length > 0 && (
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: C.t2, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 12 }}>Opportunities ({opportunities.length})</div>
+          {opportunities.map(opp => (
+            <div key={opp.slug} style={{ ...cardSolid, padding: 20, marginBottom: 8 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: C.t1 }}>{opp.project_name}</div>
+                  <div style={{ fontSize: 13, color: C.t2, marginTop: 2 }}>{opp.trade_name} &middot; {fmt(opp.budget)}</div>
+                  <div style={{ fontSize: 12, color: C.t3, marginTop: 2 }}>From: {opp.gc_company}</div>
+                </div>
+                {opp.evaluation && (() => {
+                  const s = opp.evaluation.should_bid ? 'green' : 'red';
+                  return <span style={badgeStyles[s].container}><span style={badgeStyles[s].dot} />{opp.evaluation.should_bid ? `Bid (${opp.evaluation.score})` : 'No-Bid'}</span>;
+                })()}
+              </div>
+              {opp.scope_items && opp.scope_items.length > 0 && (
+                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10 }}>
+                  {opp.scope_items.slice(0, 4).map(s => <span key={s} style={tagS}>{s}</span>)}
+                </div>
+              )}
+              {opp.bid_due_date && <div style={{ fontSize: 11, color: C.amber, marginTop: 8 }}>Due: {opp.bid_due_date}</div>}
             </div>
+          ))}
+        </div>
+      )}
+
+      {bids.length > 0 && (
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: C.t2, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 12 }}>Submitted Bids ({bids.length})</div>
+          <table style={{ width: '100%', borderCollapse: 'collapse', ...cardSolid }}>
+            <thead><tr>
+              <th style={th}>Project</th>
+              <th style={th}>Trade</th>
+              <th style={{ ...th, textAlign: 'right' }}>Bid</th>
+              <th style={th}>Status</th>
+            </tr></thead>
+            <tbody>{bids.map((b, i) => (
+              <tr key={i}>
+                <td style={{ ...td, color: C.t1, fontWeight: 600 }}>{b.project}</td>
+                <td style={{ ...td, color: C.t2 }}>{b.trade}</td>
+                <td style={{ ...td, textAlign: 'right', color: C.cyan }}>{fmt(b.base_bid)}</td>
+                <td style={td}><span style={tagS}>{b.status || 'submitted'}</span></td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      )}
+
+      {!opportunities.length && !bids.length && (
+        <div style={{ ...cardSolid, padding: 24, textAlign: 'center' }}>
+          <div style={{ fontSize: 14, color: C.t3, padding: 32 }}>
+            No opportunities or bids yet. Your agent will notify you when ITBs arrive.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Main Dashboard ───
+
+export default function Dashboard() {
+  const [data, setData] = useState<DashboardData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState<'activity' | 'data'>('activity');
+
+  const loadData = useCallback(async () => {
+    try {
+      const res = await fetch('/api/dashboard');
+      const json = await res.json();
+      setData(json);
+    } catch (e) {
+      console.error('Failed to load dashboard:', e);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadData();
+    const interval = setInterval(loadData, 5000);
+    return () => clearInterval(interval);
+  }, [loadData]);
+
+  if (loading) return (
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: C.bg0, color: C.t2 }}>
+      Loading agent data...
+    </div>
+  );
+
+  if (!data?.exists || !data.identity) {
+    return <SetupGuide agentDir={data?.agentDir || '~/.construct-agent'} />;
+  }
+
+  const { identity, contacts, projects, opportunities, bids, activity } = data;
+  const isGC = identity.company.type === 'GC';
+
+  const totalBids = isGC ? projects.reduce((s, p) => s + Object.keys(p.bids).length, 0) : bids.length;
+  const activeNeg = isGC
+    ? projects.reduce((s, p) => s + Object.values(p.negotiations).filter(n => n.status === 'open').length, 0)
+    : bids.filter(b => b.status === 'negotiating').length;
+  const awarded = isGC
+    ? projects.reduce((s, p) => s + p.trade_packages.filter(tp => tp.status === 'awarded').length, 0)
+    : bids.filter(b => b.status === 'awarded').length;
+
+  return (
+    <div style={{ minHeight: '100vh', background: C.bg0, color: C.t1 }}>
+      <div style={meshBg} />
+
+      <div style={{ ...header, padding: '0 24px', justifyContent: 'space-between', position: 'relative', zIndex: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 18, fontWeight: 800, background: 'linear-gradient(135deg, #4f7df9, #00d4ff)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
+            ConstructA2A
+          </span>
+          <span style={{ ...badgeStyles[isGC ? 'blue' : 'green'].container, fontSize: 10 }}>
+            <span style={badgeStyles[isGC ? 'blue' : 'green'].dot} />
+            {isGC ? 'GC Agent' : 'Sub Agent'}
+          </span>
+        </div>
+        <button onClick={loadData} style={{ ...btn.ghost, ...btn.sm }}>Refresh</button>
+      </div>
+
+      <div style={{ position: 'relative', zIndex: 1, maxWidth: 1200, margin: '0 auto', padding: 24 }}>
+        {/* Stats */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 24 }}>
+          <div style={statCard}>
+            <div style={statLabel}>{isGC ? 'Projects' : 'Opportunities'}</div>
+            <div style={{ ...statValue, color: C.blue }}>{isGC ? projects.length : opportunities.length}</div>
+          </div>
+          <div style={statCard}>
+            <div style={statLabel}>{isGC ? 'Bids Received' : 'Bids Submitted'}</div>
+            <div style={{ ...statValue, color: C.cyan }}>{totalBids}</div>
+          </div>
+          <div style={statCard}>
+            <div style={statLabel}>Negotiations</div>
+            <div style={{ ...statValue, color: C.amber }}>{activeNeg}</div>
+          </div>
+          <div style={statCard}>
+            <div style={statLabel}>Awarded</div>
+            <div style={{ ...statValue, color: C.green }}>{awarded}</div>
+          </div>
+          <div style={statCard}>
+            <div style={statLabel}>Activity</div>
+            <div style={{ ...statValue, color: C.purple }}>{activity.length}</div>
+          </div>
+        </div>
+
+        {/* Layout: sidebar + content */}
+        <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: 20, alignItems: 'start' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <IdentityCard identity={identity} />
+            <ContactsList contacts={contacts} />
           </div>
 
-          {/* Pipeline Flow */}
-          <div className="max-w-4xl mx-auto mb-20" style={{ animation: 'slideUp 0.6s ease-out both', animationDelay: '0.2s' }}>
-            <div className="flex items-start justify-between relative">
-              {/* Connecting line */}
-              <div className="absolute top-6 left-[8%] right-[8%] h-px" style={{ background: C.br }}>
-                <div className="h-full transition-all duration-500 ease-out"
-                  style={{
-                    width: `${(activeStep / (STEPS.length - 1)) * 100}%`,
-                    background: 'linear-gradient(135deg, #4f7df9, #00d4ff)',
-                    boxShadow: '0 0 8px rgba(79, 125, 249, 0.4)',
-                  }} />
-              </div>
-
-              {STEPS.map((step, i) => (
-                <div key={i} className="flex flex-col items-center relative z-10" style={{ width: '16%' }}>
-                  <div className={`w-12 h-12 rounded-2xl flex items-center justify-center mb-3 transition-all duration-300 ${i <= activeStep ? 'scale-110' : ''}`}
-                    style={{
-                      background: i <= activeStep ? 'linear-gradient(135deg, #4f7df9, #00d4ff)' : C.bg3,
-                      border: `1px solid ${i <= activeStep ? 'transparent' : C.br}`,
-                      boxShadow: i === activeStep ? '0 0 24px rgba(79, 125, 249, 0.4)' : 'none',
-                    }}>
-                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke={i <= activeStep ? 'white' : '#6b7a99'} strokeWidth={1.8}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d={step.icon} />
-                    </svg>
-                  </div>
-                  <span className="text-xs font-semibold mb-1 transition-colors"
-                    style={{ color: i <= activeStep ? C.t1 : C.t3 }}>
-                    {step.label}
-                  </span>
-                  <span className="text-[10px]" style={{ color: C.t3 }}>{step.desc}</span>
-                </div>
+          <div>
+            <div style={{ display: 'flex', gap: 4, marginBottom: 16 }}>
+              {(['activity', 'data'] as const).map(t => (
+                <button key={t} onClick={() => setTab(t)} style={{
+                  ...btn.ghost, ...btn.sm,
+                  ...(tab === t ? { background: 'rgba(79,125,249,0.15)', color: C.blueL, borderColor: 'rgba(79,125,249,0.3)' } : {}),
+                }}>
+                  {t === 'activity' ? 'Activity Log' : isGC ? 'Projects & Bids' : 'Opportunities & Bids'}
+                </button>
               ))}
             </div>
+
+            {tab === 'activity' && <ActivityLog activity={activity} />}
+            {tab === 'data' && isGC && <GCProjectsView projects={projects} />}
+            {tab === 'data' && !isGC && <SubOpportunitiesView opportunities={opportunities} bids={bids} />}
           </div>
-        </section>
-
-        {/* Feature Cards */}
-        <section className="max-w-6xl mx-auto px-6 pb-20">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-            <Link href="/gc" className="group block" style={{ ...card, padding: 32, textDecoration: 'none', animation: 'slideUp 0.6s ease-out both', animationDelay: '0.3s' }}>
-              <div className="flex items-start justify-between mb-6">
-                <div className="w-14 h-14 rounded-2xl flex items-center justify-center"
-                  style={{ background: 'rgba(79, 125, 249, 0.1)', border: '1px solid rgba(79, 125, 249, 0.15)' }}>
-                  <svg className="w-7 h-7" fill="none" viewBox="0 0 24 24" stroke="#4f7df9" strokeWidth={1.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
-                  </svg>
-                </div>
-                <svg className="w-5 h-5 opacity-0 group-hover:opacity-100 transition-all transform group-hover:translate-x-1" fill="none" viewBox="0 0 24 24" stroke="#4f7df9" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M17 8l4 4m0 0l-4 4m4-4H3" />
-                </svg>
-              </div>
-              <h3 className="text-xl font-bold mb-2" style={{ color: C.t1 }}>General Contractor</h3>
-              <p className="text-sm leading-relaxed mb-6" style={{ color: C.t2 }}>
-                Your BuilderAgent handles scope detection, sub discovery, ITB broadcasting, bid leveling, negotiation, and award — autonomously.
-              </p>
-              <div className="flex flex-wrap gap-2">
-                {['Scope Detection', 'Bid Leveling', 'Auto-Negotiate', 'Award'].map(cap => (
-                  <span key={cap} style={tagS}>{cap}</span>
-                ))}
-              </div>
-            </Link>
-
-            <Link href="/sub" className="group block" style={{ ...card, padding: 32, textDecoration: 'none', animation: 'slideUp 0.6s ease-out both', animationDelay: '0.4s' }}>
-              <div className="flex items-start justify-between mb-6">
-                <div className="w-14 h-14 rounded-2xl flex items-center justify-center"
-                  style={{ background: 'rgba(0, 232, 157, 0.08)', border: '1px solid rgba(0, 232, 157, 0.15)' }}>
-                  <svg className="w-7 h-7" fill="none" viewBox="0 0 24 24" stroke="#00e89d" strokeWidth={1.5}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
-                  </svg>
-                </div>
-                <svg className="w-5 h-5 opacity-0 group-hover:opacity-100 transition-all transform group-hover:translate-x-1" fill="none" viewBox="0 0 24 24" stroke="#00e89d" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M17 8l4 4m0 0l-4 4m4-4H3" />
-                </svg>
-              </div>
-              <h3 className="text-xl font-bold mb-2" style={{ color: C.t1 }}>Subcontractor</h3>
-              <p className="text-sm leading-relaxed mb-6" style={{ color: C.t2 }}>
-                Your TradeAgent monitors opportunities, runs bid/no-bid analysis, composes structured bids, and negotiates within your guardrails.
-              </p>
-              <div className="flex flex-wrap gap-2">
-                {['Bid/No-Bid AI', 'Auto-Compose', 'Negotiate', 'Compliance'].map(cap => (
-                  <span key={cap} style={tagS}>{cap}</span>
-                ))}
-              </div>
-            </Link>
-          </div>
-        </section>
-
-        {/* Live Activity + Stats */}
-        <section className="max-w-6xl mx-auto px-6 pb-24">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-            {/* Activity Feed */}
-            <div className="md:col-span-2" style={{ ...cardSolid, padding: 24, animation: 'slideUp 0.6s ease-out both', animationDelay: '0.5s' }}>
-              <div className="flex items-center justify-between mb-5">
-                <h3 className="text-sm font-bold uppercase tracking-wider" style={{ color: C.t2 }}>Live A2A Activity</h3>
-                <div className="flex items-center gap-2 text-xs" style={{ color: C.t3 }}>
-                  <span className="relative flex h-2 w-2">
-                    <span className="absolute inline-flex h-full w-full rounded-full opacity-75" style={{ background: '#00e89d', animation: 'pulse-ring 2s cubic-bezier(0, 0, 0.2, 1) infinite' }}></span>
-                    <span className="relative inline-flex rounded-full h-2 w-2" style={{ background: '#00e89d' }}></span>
-                  </span>
-                  Streaming
-                </div>
-              </div>
-              <div className="space-y-1">
-                {ACTIVITY.map((item, i) => (
-                  <div key={i} className="flex items-center gap-3 px-3 py-2.5 rounded-lg transition-colors hover:bg-white/[0.02]">
-                    <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{
-                      background: item.type === 'scope' ? 'rgba(79, 125, 249, 0.1)' :
-                        item.type === 'bid' ? 'rgba(159, 122, 234, 0.1)' :
-                        item.type === 'level' ? 'rgba(0, 212, 255, 0.1)' :
-                        item.type === 'negotiate' ? 'rgba(255, 178, 36, 0.1)' :
-                        'rgba(0, 232, 157, 0.1)',
-                    }}>
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.8} stroke={
-                        item.type === 'scope' ? '#4f7df9' :
-                        item.type === 'bid' ? '#9f7aea' :
-                        item.type === 'level' ? '#00d4ff' :
-                        item.type === 'negotiate' ? '#ffb224' : '#00e89d'
-                      }>
-                        <path strokeLinecap="round" strokeLinejoin="round" d={
-                          item.type === 'scope' ? 'M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z' :
-                          item.type === 'bid' ? 'M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z' :
-                          item.type === 'level' ? 'M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3' :
-                          item.type === 'negotiate' ? 'M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4' :
-                          'M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z'
-                        } />
-                      </svg>
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <span className="text-xs font-semibold" style={{
-                        fontFamily: 'monospace',
-                        color: item.agent === 'BuilderAgent' ? '#7da2ff' : '#4dffc3'
-                      }}>{item.agent}</span>
-                      <span className="text-xs mx-2" style={{ color: C.t3 }}>|</span>
-                      <span className="text-xs" style={{ color: C.t2 }}>{item.action}</span>
-                    </div>
-                    <span className="text-[10px] flex-shrink-0" style={{ fontFamily: 'monospace', color: C.t3 }}>{item.time}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Stats */}
-            <div className="space-y-5" style={{ animation: 'slideUp 0.6s ease-out both', animationDelay: '0.6s' }}>
-              {[
-                { label: 'Active Agents', value: '7', color: '#4f7df9', icon: 'M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z' },
-                { label: 'CSI Divisions', value: '10', color: '#9f7aea', icon: 'M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10' },
-                { label: 'Protocol', value: 'v1.0', color: '#00d4ff', icon: 'M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z' },
-                { label: 'Avg Latency', value: '<2s', color: '#00e89d', icon: 'M13 10V3L4 14h7v7l9-11h-7z' },
-              ].map((stat, i) => (
-                <div key={i} style={statCard}>
-                  <div className="flex items-center justify-between">
-                    <span style={statLabel}>{stat.label}</span>
-                    <div className="w-8 h-8 rounded-lg flex items-center justify-center" style={{ background: `${stat.color}12` }}>
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke={stat.color} strokeWidth={1.8}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d={stat.icon} />
-                      </svg>
-                    </div>
-                  </div>
-                  <div style={{ ...statValue, color: stat.color }}>{stat.value}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </section>
-      </main>
+        </div>
+      </div>
     </div>
   );
 }

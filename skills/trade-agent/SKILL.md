@@ -459,6 +459,39 @@ See `references/negotiation-guardrails.md` for detailed guardrail values and VE 
 
 ---
 
+## Activity Logging
+
+After EVERY action you take, append a JSON line to `~/.construct-agent/activity.jsonl`. This file powers the ConstructA2A dashboard — it is how the human tracks everything you do.
+
+Format (one JSON object per line, no trailing comma):
+```
+{"ts": "<ISO 8601 timestamp>", "action": "<action_type>", "summary": "<human-readable description>", "details": {<relevant data>}}
+```
+
+Action types:
+- `identity_created` — You set up the agent identity
+- `contact_added` — A new contact was added
+- `itb_received` — An ITB was received from a GC
+- `itb_evaluated` — An ITB was evaluated (bid/no-bid decision)
+- `itb_declined` — Declined to bid on an opportunity
+- `bid_submitted` — A bid was submitted to a GC
+- `negotiation_counter` — A counter-offer was sent
+- `negotiation_accepted` — A price was accepted
+- `negotiation_escalated` — Negotiation was escalated to human review
+- `bid_awarded` — You won the contract
+- `bid_rejected` — You were not selected
+
+Example:
+```
+{"ts": "2026-03-08T10:30:00Z", "action": "itb_received", "summary": "Received ITB from Turner Construction for Division 23 HVAC ($3.75M)", "details": {"gc": "Turner Construction", "trade": "HVAC", "budget": 3750000}}
+{"ts": "2026-03-08T10:31:00Z", "action": "itb_evaluated", "summary": "Evaluated HVAC opportunity: BID (score 85/100)", "details": {"trade": "HVAC", "score": 85, "should_bid": true}}
+{"ts": "2026-03-08T11:00:00Z", "action": "bid_submitted", "summary": "Submitted $3,580,000 bid for HVAC to Turner Construction", "details": {"trade": "HVAC", "amount": 3580000}}
+```
+
+**This is critical for transparency. Never skip logging.**
+
+---
+
 ## Tips for the Human
 
 - Say **"show my profile"** to see your company identity

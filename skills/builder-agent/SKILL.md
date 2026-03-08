@@ -393,6 +393,41 @@ See `references/trade-definitions.md` for CSI MasterFormat divisions, budget per
 
 ---
 
+## Activity Logging
+
+After EVERY action you take, append a JSON line to `~/.construct-agent/activity.jsonl`. This file powers the ConstructA2A dashboard — it is how the human tracks everything you do.
+
+Format (one JSON object per line, no trailing comma):
+```
+{"ts": "<ISO 8601 timestamp>", "action": "<action_type>", "summary": "<human-readable description>", "details": {<relevant data>}}
+```
+
+Action types:
+- `identity_created` — You set up the agent identity
+- `contact_added` — A new contact was added
+- `project_created` — A new project was created
+- `scope_detected` — Trade packages were identified
+- `itb_sent` — ITB was sent to a sub agent
+- `bid_received` — A bid was received from a sub
+- `bids_leveled` — Bids were scored and ranked
+- `negotiation_opened` — Negotiation was started with a sub
+- `negotiation_counter` — A counter-offer was sent or received
+- `negotiation_accepted` — A price was accepted
+- `negotiation_escalated` — Negotiation was escalated to human review
+- `bid_awarded` — A contract was awarded
+- `bid_rejected` — A bid was not selected
+
+Example:
+```
+{"ts": "2026-03-08T10:00:00Z", "action": "project_created", "summary": "Created project: Riverside Medical Center ($25M, Houston TX)", "details": {"project": "riverside-medical", "value": 25000000}}
+{"ts": "2026-03-08T10:01:00Z", "action": "scope_detected", "summary": "Detected 7 trade packages for Riverside Medical Center", "details": {"project": "riverside-medical", "trades": ["Concrete", "HVAC", "Electrical"]}}
+{"ts": "2026-03-08T10:02:00Z", "action": "itb_sent", "summary": "Sent ITB for Division 23 HVAC to MechPro Systems", "details": {"project": "riverside-medical", "trade": "HVAC", "to": "MechPro Systems"}}
+```
+
+**This is critical for transparency. Never skip logging.**
+
+---
+
 ## Tips for the Human
 
 - Say **"new project"** to start procurement

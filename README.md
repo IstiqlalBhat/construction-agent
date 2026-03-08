@@ -2,7 +2,7 @@
 
 Peer-to-peer AI agents for construction procurement. A General Contractor runs one agent on their laptop, a Subcontractor runs another on theirs. The agents negotiate autonomously — scope detection, bid generation, price negotiation, contract award — with the human approving every major decision.
 
-Built on [OpenClaw](https://github.com/openclaw/openclaw) skills + a Next.js dashboard backed by Supabase and Google Gemini.
+Built on [OpenClaw](https://github.com/openclaw/openclaw) skills with a local Next.js dashboard for transparency.
 
 ## How It Works
 
@@ -22,6 +22,11 @@ GC's Laptop                              Sub's Laptop
 │  Human reviews      │                  │  Human reviews      │
 │  & approves         │                  │  & approves         │
 └─────────────────────┘                  └─────────────────────┘
+         │                                        │
+         └──── ~/.construct-agent/ ───────────────┘
+                       │
+              Next.js Dashboard
+              (reads local files)
 ```
 
 **The GC agent:**
@@ -64,30 +69,19 @@ construction-procurement/
 │   ├── setup.sh                     # Creates ~/.construct-agent/ directory
 │   └── openclaw-config-example.json # OpenClaw config for A2A
 │
-├── src/                             # Next.js web dashboard
+├── src/                             # Next.js dashboard (reads ~/.construct-agent/)
 │   ├── app/
-│   │   ├── page.tsx                 # Landing page
-│   │   ├── gc/page.tsx              # GC dashboard
-│   │   ├── sub/page.tsx             # Sub dashboard
-│   │   └── api/                     # REST API routes
+│   │   ├── page.tsx                 # Unified dashboard (auto-detects GC vs Sub)
+│   │   └── api/
+│   │       └── dashboard/route.ts   # Single API endpoint for agent data
 │   └── lib/
-│       ├── agents/                  # In-process agent classes (dashboard mode)
-│       ├── ai/                      # Gemini AI integration
-│       ├── a2a/                     # A2A protocol helpers
-│       ├── store.ts                 # Supabase data layer
-│       └── supabase/                # Supabase client setup
-│
-├── supabase/
-│   ├── migrations/
-│   │   └── 001_initial_schema.sql   # 10 tables, enums, RLS policies
-│   └── seed.sql                     # Demo data (1 GC + 6 subs)
+│       ├── local-store.ts           # Reads agent state from ~/.construct-agent/
+│       └── styles.ts                # Dashboard theme & styles
 │
 └── package.json
 ```
 
-## Quick Start: OpenClaw Agents (Peer-to-Peer)
-
-This is the primary mode. Each person runs their own agent.
+## Quick Start
 
 ### Prerequisites
 
@@ -165,53 +159,26 @@ Your agent automatically receives ITBs, evaluates them, and asks you whether to 
 > Use my rates from ~/Documents/labor-rates-2026.xlsx
 ```
 
-## Quick Start: Web Dashboard (Standalone Demo)
+## Web Dashboard
 
-The Next.js dashboard runs both agents in-process with Supabase for data and Gemini for AI. Useful for demos and testing without OpenClaw.
+The Next.js dashboard provides transparency into what your agent is doing. It reads directly from `~/.construct-agent/` — the same local files your OpenClaw agent writes to.
 
-### Prerequisites
-
-- Node.js 18+
-- Supabase project (or local Supabase via `npx supabase start`)
-- Google Gemini API key (optional, falls back to deterministic logic)
-
-### 1. Install Dependencies
+### Running the Dashboard
 
 ```bash
 npm install
-```
-
-### 2. Environment Variables
-
-Create `.env.local`:
-
-```env
-NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
-SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
-GEMINI_API_KEY=your-gemini-key          # Optional
-```
-
-### 3. Set Up Database
-
-Run the migration in your Supabase SQL editor:
-
-```sql
--- Copy and run supabase/migrations/001_initial_schema.sql
--- Then run supabase/seed.sql for demo data
-```
-
-### 4. Run
-
-```bash
 npm run dev
 ```
 
-| Page | URL |
-|------|-----|
-| Landing page | http://localhost:3000 |
-| GC Dashboard | http://localhost:3000/gc |
-| Sub Dashboard | http://localhost:3000/sub |
+Open http://localhost:3000. The dashboard auto-detects whether you're a GC or Sub from your `identity.yaml` and shows the appropriate view.
+
+**What it shows:**
+- Your agent identity and contacts
+- Activity log (every action your agent takes, from `activity.jsonl`)
+- **GC view:** Projects, trade packages, received bids, negotiations, leveling results
+- **Sub view:** Incoming opportunities (ITBs), submitted bids, negotiation status
+
+The dashboard polls for updates every 5 seconds. No database required — it reads the local filesystem.
 
 ## Procurement Pipeline
 
@@ -314,6 +281,7 @@ Each agent stores persistent state at `~/.construct-agent/`:
 ~/.construct-agent/
 ├── identity.yaml              # Company profile
 ├── contacts.yaml              # Known agent contacts
+├── activity.jsonl             # Action log (powers the dashboard)
 ├── cost-data/                 # Your rates (Sub agents)
 │   ├── labor-rates.json
 │   └── material-rates.json
@@ -338,35 +306,14 @@ Each agent stores persistent state at `~/.construct-agent/`:
             └── negotiation.json
 ```
 
-## Database Schema (Dashboard Mode)
-
-The web dashboard uses 10 Supabase tables:
-
-| Table | Purpose |
-|-------|---------|
-| `companies` | GCs and Subs with prequalification data |
-| `projects` | Construction projects with status tracking |
-| `trade_packages` | CSI division scopes per project |
-| `bids` | Submitted bids with pricing and compliance |
-| `bid_line_items` | Labor/material/equipment breakdown per scope item |
-| `lead_time_items` | Long-lead procurement items |
-| `negotiation_sessions` | Price negotiation tracking |
-| `negotiation_rounds` | Individual rounds with proposals and messages |
-| `a2a_messages` | Full audit log of agent-to-agent communication |
-| `agent_cards` | Agent identity and capabilities registry |
-
-Full schema: [supabase/migrations/001_initial_schema.sql](supabase/migrations/001_initial_schema.sql)
-
 ## Tech Stack
 
 | Component | Technology |
 |-----------|-----------|
 | Agent runtime | [OpenClaw](https://github.com/openclaw/openclaw) |
 | Agent communication | OpenClaw `sessions_send` |
-| Web dashboard | Next.js 16, React 19, Tailwind CSS 4 |
-| Database | Supabase (PostgreSQL) |
-| AI | Google Gemini (`gemini-2.5-flash-preview-05-20`) |
-| Validation | Zod |
+| Dashboard | Next.js 16, React 19, Tailwind CSS 4 |
+| Data layer | Local filesystem (`~/.construct-agent/`) |
 | Language | TypeScript |
 
 ## License
